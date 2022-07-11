@@ -17,6 +17,9 @@
 SHT3x::SHT3x() {
   this->_address = 0;
   this->_error = SHT_ERROR_CODES_t::SHT_ERR_OK;
+  this->_mode = SHT_REP_MODES_t::SHT_REP_MODE_UNDEF;
+  this->_rawHumidity = 0;
+  this->_rawTemperature = 0;
 }
 
 uint8_t SHT3x::crc8(const uint8_t* data, uint8_t len) {
@@ -56,11 +59,31 @@ bool SHT3x::readRegister(uint8_t* data, uint8_t count) {
   return false;
 }
 
-bool SHT3x::begin(const uint8_t _addr) {
-  if ((_addr != SHT_ADDR_t::SHT_ADDR_DEFAULT) && (_addr != SHT_ADDR_t::SHT_ADDR_ALT)) {
+uint8_t SHT3x::getErrorCode(void) {
+  return this->_error;
+}
+
+bool SHT3x::setRepMode(uint16_t mode) {
+  if ((mode != SHT_REP_MODES_t::SHT_REP_MODE_LOW) && (mode != SHT_REP_MODES_t::SHT_REP_MODE_MED) && (mode != SHT_REP_MODES_t::SHT_REP_MODE_HI)) {
+    this->_mode = SHT_REP_MODES_t::SHT_REP_MODE_UNDEF;
     return false;
   }
-  this->_address = _addr;
+  this->_mode = mode;
+  return true;
+}
+
+bool SHT3x::begin(const uint8_t addr, const uint16_t mode) {
+  if ((addr != SHT_ADDR_t::SHT_ADDR_DEFAULT) && (addr != SHT_ADDR_t::SHT_ADDR_ALT)) {
+    return false;
+  }
+  this->_address = addr;
+  if (!this->setRepMode(mode)) {
+    LOG_ERROR("Wrong repeatability mode");
+    return false;
+  }
+  if (!this->isConnected()) {
+    return false;
+  }
   return this->reset();
 }
 
@@ -86,4 +109,47 @@ uint16_t SHT3x::readStatus(void) {
   }
 
   return (uint16_t) (status[0] << 8) + status[1];
+}
+
+bool SHT3x::isConnected(void) {
+  Wire.beginTransmission(this->_address);
+  uint8_t _ret = Wire.endTransmission();
+  if (_ret != 0) {
+    this->_error = SHT_ERROR_CODES_t::SHT_ERR_NOT_CONNECT;
+  }
+  return (_ret == 0);
+}
+
+bool SHT3x::readSensorData(void) {
+  if (this->_mode == SHT_REP_MODES_t::SHT_REP_MODE_UNDEF) {
+    LOG_ERROR("Error! Set correct repeatability mode");
+    return false;
+  }
+  if (this->writeRegister(this->_mode) == false) {
+    return false;
+  }
+  delay(20);
+  uint8_t buffer[6] = {0};
+  if (this->readRegister((uint8_t*)&buffer[0], 6) == false) {
+    return false;
+  }
+  if (buffer[2] != this->crc8(buffer, 2)) {
+    this->_error = SHT_ERROR_CODES_t::SHT_ERR_CRC_TEMP;
+    return false;
+  }
+  if (buffer[5] != this->crc8(buffer + 3, 2)) {
+    this->_error = SHT_ERROR_CODES_t::SHT_ERR_CRC_HUM;
+    return false;
+  }
+  this->_rawTemperature = (buffer[0] << 8) | (buffer[1]);
+  this->_rawHumidity = (buffer[3] << 8) | (buffer[4]);
+  return true;
+}
+
+float SHT3x::getTemperature(void) {
+  return (float)(this->_rawTemperature * (175.0f / 65535.0f) - 45.0f);
+}
+
+float SHT3x::getHumidity(void) {
+  return (float)(this->_rawHumidity * (100.0f / 65535.0f));
 }
